@@ -3,7 +3,9 @@
 
 @interface StatusBarDelegate : NSObject
 @property (nonatomic, copy) void (^onQuit)(void);
+@property (nonatomic, copy) void (^onToggleLocalModel)(void);
 - (void)quitApp:(id)sender;
+- (void)toggleLocalModel:(id)sender;
 @end
 
 @implementation StatusBarDelegate
@@ -15,6 +17,13 @@
         [NSApp terminate:nil];
     }
 }
+
+- (void)toggleLocalModel:(id)sender {
+    (void)sender;
+    if (self.onToggleLocalModel) {
+        self.onToggleLocalModel();
+    }
+}
 @end
 
 StatusBarController::StatusBarController(AppController *controller)
@@ -22,6 +31,7 @@ StatusBarController::StatusBarController(AppController *controller)
     , m_statusItem(nil)
     , m_menu(nil)
     , m_statusMenuItem(nil)
+    , m_localModelItem(nil)
     , m_delegate(nil)
 {
 }
@@ -37,6 +47,11 @@ void StatusBarController::setup()
 {
     m_delegate = [[StatusBarDelegate alloc] init];
     m_delegate.onQuit = ^{ [NSApp terminate:nil]; };
+    m_delegate.onToggleLocalModel = ^{
+        bool newState = !m_controller->isLocalModelEnabled();
+        m_controller->setLocalModelEnabled(newState);
+        updateLocalModelToggle();
+    };
 
     m_statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
 
@@ -54,6 +69,13 @@ void StatusBarController::setup()
 
     [m_menu addItem:[NSMenuItem separatorItem]];
 
+    m_localModelItem = [m_menu addItemWithTitle:@"Local Model (fallback)"
+                                         action:@selector(toggleLocalModel:) keyEquivalent:@""];
+    [m_localModelItem setTarget:m_delegate];
+    updateLocalModelToggle();
+
+    [m_menu addItem:[NSMenuItem separatorItem]];
+
     NSMenuItem *quitItem = [m_menu addItemWithTitle:@"Quit Whispertype"
                                              action:@selector(quitApp:) keyEquivalent:@"q"];
     [quitItem setTarget:m_delegate];
@@ -65,7 +87,7 @@ void StatusBarController::setup()
         updateIcon(state);
         switch (state) {
         case AppController::State::Initializing:
-            updateStatusText("Initializing...");
+            updateStatusText("Set GROQ_API_KEY in defaults");
             break;
         case AppController::State::Ready:
             updateStatusText("Ready \u2014 \u2318\u21E7V to record");
@@ -118,5 +140,12 @@ void StatusBarController::updateStatusText(const std::string& text)
 {
     if (m_statusMenuItem) {
         [m_statusMenuItem setTitle:[NSString stringWithUTF8String:text.c_str()]];
+    }
+}
+
+void StatusBarController::updateLocalModelToggle()
+{
+    if (m_localModelItem) {
+        [m_localModelItem setState:m_controller->isLocalModelEnabled() ? NSControlStateValueOn : NSControlStateValueOff];
     }
 }

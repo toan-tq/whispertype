@@ -8,10 +8,12 @@ set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -fobjc-arc")
 # whisper.cpp - local submodule
 set(WHISPER_DIR "${CMAKE_SOURCE_DIR}/external/whisper.cpp")
 
+cmake_policy(SET CMP0077 NEW)
+
 # Build whisper as static library
-set(BUILD_SHARED_LIBS OFF)
-set(WHISPER_BUILD_EXAMPLES OFF)
-set(WHISPER_BUILD_TESTS OFF)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 # whisper.cpp / ggml optimizations for Apple Silicon
 if(APPLE)
@@ -22,8 +24,6 @@ if(APPLE)
     set(GGML_OPENMP   OFF CACHE BOOL "Apple Clang has no OpenMP" FORCE)
     set(GGML_CCACHE   OFF CACHE BOOL "Don't require ccache" FORCE)
 endif()
-
-cmake_policy(SET CMP0077 NEW)
 add_subdirectory(${WHISPER_DIR} whisper.cpp)
 
 # All source files (Objective-C++)
@@ -32,6 +32,7 @@ set(SOURCES
     src/appcontroller.mm
     src/voicerecorder.mm
     src/whispertranscriber.mm
+    src/groqtranscriber.mm
     src/textinjector.mm
     src/globalhotkey.mm
     src/statusbarcontroller.mm
@@ -42,6 +43,7 @@ set(HEADERS
     src/appcontroller.h
     src/voicerecorder.h
     src/whispertranscriber.h
+    src/groqtranscriber.h
     src/textinjector.h
     src/globalhotkey.h
     src/statusbarcontroller.h

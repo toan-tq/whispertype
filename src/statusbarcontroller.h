@@ -24,10 +24,12 @@ public:
 private:
     void updateIcon(AppController::State state);
     void updateStatusText(const std::string& text);
+    void updateLocalModelToggle();
 
     AppController *m_controller;
     NSStatusItem *m_statusItem;
     NSMenu *m_menu;
     NSMenuItem *m_statusMenuItem;
+    NSMenuItem *m_localModelItem;
     StatusBarDelegate *m_delegate;
 };
