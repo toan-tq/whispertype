@@ -64,7 +64,7 @@ void StatusBarController::setup()
 
     [m_menu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *hotkeyItem = [m_menu addItemWithTitle:@"Toggle: \u2318\u21E7V" action:nil keyEquivalent:@""];
+    NSMenuItem *hotkeyItem = [m_menu addItemWithTitle:@"Toggle: \u2325 Space" action:nil keyEquivalent:@""];
     [hotkeyItem setEnabled:NO];
 
     [m_menu addItem:[NSMenuItem separatorItem]];
@@ -90,7 +90,7 @@ void StatusBarController::setup()
             updateStatusText("Set GROQ_API_KEY in defaults");
             break;
         case AppController::State::Ready:
-            updateStatusText("Ready \u2014 \u2318\u21E7V to record");
+            updateStatusText("Ready \u2014 \u2325Space to record");
             break;
         case AppController::State::Recording:
             updateStatusText("Recording...");

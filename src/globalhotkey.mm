@@ -32,11 +32,10 @@ CGEventRef GlobalHotkey::eventCallback(CGEventTapProxy proxy, CGEventType type,
     CGKeyCode keyCode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
     CGEventFlags flags = CGEventGetFlags(event);
 
-    bool hasCmd = (flags & kCGEventFlagMaskCommand) != 0;
-    bool hasShift = (flags & kCGEventFlagMaskShift) != 0;
+    bool hasOpt = (flags & kCGEventFlagMaskAlternate) != 0;
 
-    if (keyCode == kVK_ANSI_V && hasCmd && hasShift) {
-        NSLog(@"Global hotkey Cmd+Shift+V pressed");
+    if (keyCode == kVK_Space && hasOpt) {
+        NSLog(@"Global hotkey Option+Space pressed");
         auto callback = self->onHotkeyPressed;
         if (callback) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -76,7 +75,7 @@ bool GlobalHotkey::start()
     CFRunLoopAddSource(CFRunLoopGetMain(), m_runLoopSource, kCFRunLoopCommonModes);
     CGEventTapEnable(m_eventTap, true);
 
-    NSLog(@"Global hotkey registered: Cmd+Shift+V");
+    NSLog(@"Global hotkey registered: Option+Space");
     return true;
 }
 
