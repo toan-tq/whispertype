@@ -63,7 +63,7 @@ cd whispertype
 ./build.sh
 ```
 
-The build script compiles with Release optimizations for arm64. Output: `build-release/Whispertype.app`
+The build script compiles with Release optimizations for arm64 in `build-release/`, then installs the app (see below). `./build.sh --no-install` only builds and leaves `build-release/Whispertype.app` in place.
 
 ### Dependencies
 
@@ -73,11 +73,14 @@ The build script compiles with Release optimizations for arm64. Output: `build-r
 
 ## Install
 
-After building, copy the app to Applications:
+`./build.sh` installs by default: it quits the running Whispertype, replaces
+`/Applications/Whispertype.app` with the freshly built bundle (moved, not copied, so no
+second copy is left in `build-release/`), registers it with LaunchServices and relaunches it.
 
-```bash
-cp -r build-release/Whispertype.app /Applications/
-```
+Keeping a single copy matters: two bundles with the id `com.tqt.whispertype` both show up
+in Spotlight, and LaunchServices may start the build copy, whose ad-hoc signature does not
+match the permissions granted to the installed one. Don't install with `cp -r` over an
+existing bundle either — it overwrites the signed binary in place and leaves stale files.
 
 ### Permissions survive rebuilds only with a stable signing identity
 

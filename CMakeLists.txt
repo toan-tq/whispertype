@@ -51,8 +51,13 @@ set(HEADERS
     src/macpermissions.h
 )
 
+# App icon (rendered by resources/icon/render.swift; candidate A). Listed as a source so
+# CMake copies it into Contents/Resources of the bundle.
+set(APP_ICON "${CMAKE_SOURCE_DIR}/resources/Whispertype.icns")
+set_source_files_properties(${APP_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+
 # Create executable
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${APP_ICON})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -71,13 +76,6 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_NAME "Whispertype"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/Info.plist"
         XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_SOURCE_DIR}/Whispertype.entitlements"
-    )
-
-    # Copy Metal shader to bundle Resources
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:${PROJECT_NAME}>/Contents/Resources"
-        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_BINARY_DIR}/bin/ggml-metal.metal" "$<TARGET_BUNDLE_DIR:${PROJECT_NAME}>/Contents/Resources/" || true
-        COMMENT "Copying Metal shader to bundle"
     )
 
     # Sign the bundle. Ad-hoc ("-") gives every build a new cdhash, and TCC keys the
