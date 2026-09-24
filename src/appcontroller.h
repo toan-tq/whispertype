@@ -26,13 +26,21 @@ public:
     std::function<void(double)> onDownloadProgress;
     std::function<void()> onDownloadStarted;
     std::function<void(const std::string&)> onHotkeyIgnored;
+    // Progress of the transcription in flight ("Uploading 43%", "Waiting for Groq").
+    // newItem is true when a new recording starts being processed, so the UI can
+    // restart its elapsed-time clock.
+    std::function<void(const std::string& text, bool newItem)> onStatusMessage;
+    // A recording could not be transcribed; its audio was kept in the "failed" folder.
+    std::function<void(const std::string& reason)> onTranscriptionFailed;
+    std::function<void()> onTranscriptionSucceeded;
 
 private:
     void setState(State state);
-    void enqueueTranscription(const std::string& wavFilePath);
+    void enqueueTranscription(const std::string& audioFilePath);
     void processNext();
     void finishTranscription();
-    void deleteWavFile(const std::string& wavFilePath);
+    void removeAudio(const std::string& audioFilePath);
+    void keepFailedAudio(const std::string& audioFilePath);
 
     VoiceRecorder *m_recorder;
     WhisperTranscriber *m_transcriber;

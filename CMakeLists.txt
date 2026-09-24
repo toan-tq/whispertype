@@ -80,9 +80,12 @@ if(APPLE)
         COMMENT "Copying Metal shader to bundle"
     )
 
-    # Sign the bundle
+    # Sign the bundle. Ad-hoc ("-") gives every build a new cdhash, and TCC keys the
+    # Accessibility/Microphone grants on that hash, so each rebuild needs re-granting.
+    # Pass -DCODESIGN_IDENTITY="Your Identity" to keep grants across builds.
+    set(CODESIGN_IDENTITY "-" CACHE STRING "codesign identity; '-' means ad-hoc")
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND codesign --force --sign - --entitlements "${CMAKE_SOURCE_DIR}/Whispertype.entitlements" "$<TARGET_BUNDLE_DIR:${PROJECT_NAME}>"
+        COMMAND codesign --force --sign "${CODESIGN_IDENTITY}" --entitlements "${CMAKE_SOURCE_DIR}/Whispertype.entitlements" "$<TARGET_BUNDLE_DIR:${PROJECT_NAME}>"
         COMMENT "Signing app bundle"
     )
 

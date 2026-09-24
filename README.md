@@ -11,6 +11,8 @@ A native macOS menu bar app that transcribes your voice and types it into any fo
 - **Vietnamese-first** — tuned for Vietnamese (`vi`), works with other languages too
 - **Types into any app** — simulates keyboard input into whatever app is focused
 - **Apple Silicon optimized** — Metal GPU, Accelerate (AMX), native ARM features
+- **Visible progress** — the menu shows "Uploading 43% · 12s" / "Waiting for Groq · 3s" instead of a silent wait
+- **Nothing lost** — a recording that could not be transcribed is kept under `failed/` (see menu → Show Failed Recordings)
 - **Voice commands**:
   - `enter` — press Return key
   - `xuống dòng` / `new line` — press Option+Return (new line without sending, e.g. in chat apps)
@@ -42,6 +44,17 @@ defaults write com.tqt.whispertype LocalModelEnabled -bool true
 
 Or toggle it in the menu bar menu. When enabled, the app downloads `ggml-large-v3-turbo.bin` (~1.6 GB) to `~/Library/Application Support/TQT/Whispertype/` on first use.
 
+### 3. (Optional) Tune recording
+
+```bash
+# Auto-stop cap in seconds (default 30, range 5–600)
+defaults write com.tqt.whispertype MaxRecordingSeconds -int 60
+
+# Recording format sent to Groq: wav (default, best transcript quality), flac or aac
+# (smaller uploads, but both measured worse on Vietnamese; opt-in only)
+defaults write com.tqt.whispertype RecordingFormat -string wav
+```
+
 ## Build
 
 ```bash
@@ -66,6 +79,26 @@ After building, copy the app to Applications:
 cp -r build-release/Whispertype.app /Applications/
 ```
 
+### Permissions survive rebuilds only with a stable signing identity
+
+The default build is ad-hoc signed (`codesign --sign -`). macOS ties the Accessibility
+and Microphone grants to the exact code hash, so **every rebuild is a new app** to the
+system: the grants stop applying silently and the hotkey never registers. After a
+rebuild, reset and re-grant:
+
+```bash
+tccutil reset Accessibility com.tqt.whispertype
+tccutil reset Microphone com.tqt.whispertype
+open /Applications/Whispertype.app   # then allow in System Settings → Privacy & Security
+```
+
+To keep grants across builds, sign with a certificate that does not change, e.g. a
+self-signed "Code Signing" certificate created in Keychain Access:
+
+```bash
+CODESIGN_IDENTITY="Whispertype Dev" ./build.sh
+```
+
 ## Permissions
 
 On first launch, macOS will ask for:
@@ -77,19 +110,28 @@ On first launch, macOS will ask for:
 
 1. Press `⌥ Space` — the menu bar icon changes to indicate recording
 2. Speak naturally (Vietnamese or other languages)
-3. Press `⌥ Space` again to stop (or wait 30s for auto-stop)
-4. Groq transcribes your speech in the cloud
+3. Press `⌥ Space` again to stop (or wait for the auto-stop cap, 30 s by default)
+4. The recording (WAV, 16 kHz mono) is uploaded to Groq; the menu shows upload
+   progress and elapsed time
 5. The transcribed text is typed into whatever app is focused
 
-If Groq is rate-limited or returns a network error, the app automatically falls back to the local Whisper model (if enabled). Transcription requests are serialized so back-to-back recordings always type in the correct order.
+Each Groq request is bounded: 20 s without any progress or 45 s in total counts as a
+failure, and the request is retried once after 2 s. If it still fails and the local
+model is enabled, the app falls back to it; otherwise the audio is moved to
+`~/Library/Caches/com.tqt.whispertype/failed/`, the menu shows "Last error: …", and
+the app beeps. Failed recordings are purged after 7 days.
+
+Transcription requests are serialized so back-to-back recordings always type in the
+correct order.
 
 ## Architecture
 
 Pure native macOS — no Electron, no Qt, no web views.
 
 - **Language**: Objective-C++ (.mm)
-- **Audio capture**: AVFoundation (`AVAudioRecorder`, 16kHz mono WAV)
-- **Primary transcription**: Groq API (`whisper-large-v3`, cloud)
+- **Audio capture**: AVFoundation (`AVAudioRecorder`, 16 kHz mono WAV by default)
+- **Primary transcription**: Groq API (`whisper-large-v3`, cloud) with upload progress,
+  explicit timeouts and one retry
 - **Fallback transcription**: whisper.cpp (local, on-device)
 - **Text input**: CGEvent keyboard simulation
 - **UI**: NSStatusItem (menu bar) with SF Symbols

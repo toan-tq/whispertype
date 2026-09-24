@@ -228,7 +228,7 @@ void WhisperTranscriber::doTranscribe(std::string wavFilePath)
 {
     NSLog(@"Starting transcription of: %s", wavFilePath.c_str());
 
-    // Read audio file using ExtAudioFile (handles any WAV format)
+    // Read audio file using ExtAudioFile (decodes m4a/flac/wav via CoreAudio)
     NSString *nsPath = [NSString stringWithUTF8String:wavFilePath.c_str()];
     NSURL *fileURL = [NSURL fileURLWithPath:nsPath];
 

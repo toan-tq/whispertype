@@ -1,11 +1,14 @@
 #include "statusbarcontroller.h"
+#include "voicerecorder.h"
 #import <Cocoa/Cocoa.h>
 
 @interface StatusBarDelegate : NSObject
 @property (nonatomic, copy) void (^onQuit)(void);
 @property (nonatomic, copy) void (^onToggleLocalModel)(void);
+@property (nonatomic, copy) void (^onShowFailed)(void);
 - (void)quitApp:(id)sender;
 - (void)toggleLocalModel:(id)sender;
+- (void)showFailedRecordings:(id)sender;
 @end
 
 @implementation StatusBarDelegate
@@ -24,20 +27,33 @@
         self.onToggleLocalModel();
     }
 }
+
+- (void)showFailedRecordings:(id)sender {
+    (void)sender;
+    if (self.onShowFailed) {
+        self.onShowFailed();
+    }
+}
 @end
+
+static double monotonicNow() { return [NSProcessInfo processInfo].systemUptime; }
 
 StatusBarController::StatusBarController(AppController *controller)
     : m_controller(controller)
     , m_statusItem(nil)
     , m_menu(nil)
     , m_statusMenuItem(nil)
+    , m_lastErrorItem(nil)
     , m_localModelItem(nil)
     , m_delegate(nil)
+    , m_clock(nil)
+    , m_phaseStartedAt(0)
 {
 }
 
 StatusBarController::~StatusBarController()
 {
+    stopClock();
     if (m_statusItem) {
         [[NSStatusBar systemStatusBar] removeStatusItem:m_statusItem];
     }
@@ -52,6 +68,13 @@ void StatusBarController::setup()
         m_controller->setLocalModelEnabled(newState);
         updateLocalModelToggle();
     };
+    m_delegate.onShowFailed = ^{
+        NSString *dir = [[NSString stringWithUTF8String:VoiceRecorder::cacheDirectory().c_str()]
+                         stringByAppendingPathComponent:@"failed"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:dir]];
+    };
 
     m_statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
 
@@ -62,9 +85,13 @@ void StatusBarController::setup()
     m_statusMenuItem = [m_menu addItemWithTitle:@"Initializing..." action:nil keyEquivalent:@""];
     [m_statusMenuItem setEnabled:NO];
 
+    m_lastErrorItem = [m_menu addItemWithTitle:@"" action:nil keyEquivalent:@""];
+    [m_lastErrorItem setEnabled:NO];
+    [m_lastErrorItem setHidden:YES];
+
     [m_menu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *hotkeyItem = [m_menu addItemWithTitle:@"Toggle: \u2325 Space" action:nil keyEquivalent:@""];
+    NSMenuItem *hotkeyItem = [m_menu addItemWithTitle:@"Toggle: ⌥ Space" action:nil keyEquivalent:@""];
     [hotkeyItem setEnabled:NO];
 
     [m_menu addItem:[NSMenuItem separatorItem]];
@@ -73,6 +100,10 @@ void StatusBarController::setup()
                                          action:@selector(toggleLocalModel:) keyEquivalent:@""];
     [m_localModelItem setTarget:m_delegate];
     updateLocalModelToggle();
+
+    NSMenuItem *failedItem = [m_menu addItemWithTitle:@"Show Failed Recordings"
+                                               action:@selector(showFailedRecordings:) keyEquivalent:@""];
+    [failedItem setTarget:m_delegate];
 
     [m_menu addItem:[NSMenuItem separatorItem]];
 
@@ -87,18 +118,38 @@ void StatusBarController::setup()
         updateIcon(state);
         switch (state) {
         case AppController::State::Initializing:
-            updateStatusText("Set GROQ_API_KEY in defaults");
+            stopClock();
+            updateStatusText("Set GroqAPIKey in defaults");
             break;
         case AppController::State::Ready:
-            updateStatusText("Ready \u2014 \u2325Space to record");
+            stopClock();
+            updateStatusText("Ready — ⌥Space to record");
             break;
         case AppController::State::Recording:
+            stopClock();
             updateStatusText("Recording...");
             break;
         case AppController::State::Transcribing:
-            updateStatusText("Transcribing...");
+            showPhase("Transcribing", true);
             break;
         }
+    };
+
+    m_controller->onStatusMessage = [this](const std::string& text, bool newItem) {
+        // While the mic is live the menu shows "Recording..."; progress of the request
+        // still in flight would only be confusing there.
+        if (m_controller->state() != AppController::State::Transcribing) return;
+        showPhase(text, newItem);
+    };
+
+    m_controller->onTranscriptionFailed = [this](const std::string& reason) {
+        NSBeep();
+        [m_lastErrorItem setTitle:[NSString stringWithFormat:@"Last error: %s (audio kept)", reason.c_str()]];
+        [m_lastErrorItem setHidden:NO];
+    };
+
+    m_controller->onTranscriptionSucceeded = [this]() {
+        [m_lastErrorItem setHidden:YES];
     };
 
     m_controller->onHotkeyIgnored = [this](const std::string& reason) {
@@ -153,4 +204,38 @@ void StatusBarController::updateLocalModelToggle()
     if (m_localModelItem) {
         [m_localModelItem setState:m_controller->isLocalModelEnabled() ? NSControlStateValueOn : NSControlStateValueOff];
     }
+}
+
+void StatusBarController::showPhase(const std::string& text, bool restartClock)
+{
+    m_phaseText = text;
+    if (restartClock || !m_clock) m_phaseStartedAt = monotonicNow();
+    startClock();
+    renderPhase();
+}
+
+void StatusBarController::renderPhase()
+{
+    double elapsed = monotonicNow() - m_phaseStartedAt;
+    std::string text = m_phaseText;
+    if (elapsed >= 1.0) text += " · " + std::to_string(static_cast<int>(elapsed)) + "s";
+    updateStatusText(text);
+}
+
+void StatusBarController::startClock()
+{
+    if (m_clock) return;
+    m_clock = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(m_clock, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+                              NSEC_PER_SEC, 100 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(m_clock, ^{ renderPhase(); });
+    dispatch_resume(m_clock);
+}
+
+void StatusBarController::stopClock()
+{
+    if (!m_clock) return;
+    dispatch_source_cancel(m_clock);
+    m_clock = nil;
+    m_phaseText.clear();
 }

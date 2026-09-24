@@ -7,6 +7,20 @@
 
 static NSString *const kLocalModelEnabledKey = @"LocalModelEnabled";
 
+// "[groq_network_error] Timed out after 45s" -> "Timed out after 45s", capped for the menu.
+static std::string shortReason(const std::string& error)
+{
+    std::string s = error;
+    if (!s.empty() && s[0] == '[') {
+        size_t end = s.find("] ");
+        if (end != std::string::npos) s = s.substr(end + 2);
+    }
+    size_t nl = s.find_first_of("\r\n");
+    if (nl != std::string::npos) s = s.substr(0, nl);
+    if (s.size() > 80) s = s.substr(0, 77) + "...";
+    return s;
+}
+
 AppController::AppController()
 {
     m_recorder = new VoiceRecorder();
@@ -25,42 +39,52 @@ AppController::AppController()
         if (m_state == State::Recording) setState(State::Ready);
     };
 
-    // Each transcribe() call carries its own wavPath via the callback, so the
-    // shared handler is safe across queued/concurrent requests. We still
-    // serialize requests at this layer to preserve typing order.
-    m_groqTranscriber->onTranscriptionComplete = [this](const std::string& wavPath, const std::string& text) {
+    // Each transcribe() call carries its own path via the callback, so the shared
+    // handler is safe across queued/concurrent requests. We still serialize requests
+    // at this layer to preserve typing order.
+    m_groqTranscriber->onStatus = [this](const std::string& /*path*/, const std::string& status) {
+        if (onStatusMessage) onStatusMessage(status, false);
+    };
+
+    m_groqTranscriber->onTranscriptionComplete = [this](const std::string& path, const std::string& text) {
         NSLog(@"Groq transcription complete: %s", text.c_str());
         if (!text.empty()) TextInjector::typeText(text);
-        deleteWavFile(wavPath);
+        removeAudio(path);
+        if (onTranscriptionSucceeded) onTranscriptionSucceeded();
         finishTranscription();
     };
 
-    m_groqTranscriber->onTranscriptionError = [this](const std::string& wavPath, const std::string& error) {
+    m_groqTranscriber->onTranscriptionError = [this](const std::string& path, const std::string& error) {
         NSLog(@"Groq transcription error: %s", error.c_str());
 
         bool retryable = error.find("[groq_rate_limit]") != std::string::npos ||
-                         error.find("[groq_network_error]") != std::string::npos;
+                         error.find("[groq_network_error]") != std::string::npos ||
+                         error.find("[groq_server_error]") != std::string::npos;
 
         if (retryable && m_localModelEnabled && m_transcriber->isReady()) {
             NSLog(@"Falling back to local whisper model");
-            m_transcriber->transcribe(wavPath);
+            if (onStatusMessage) onStatusMessage("Transcribing locally (Groq failed)", false);
+            m_transcriber->transcribe(path);
             return;
         }
 
-        deleteWavFile(wavPath);
+        keepFailedAudio(path);
+        if (onTranscriptionFailed) onTranscriptionFailed(shortReason(error));
         finishTranscription();
     };
 
-    m_transcriber->onTranscriptionComplete = [this](const std::string& wavPath, const std::string& text) {
+    m_transcriber->onTranscriptionComplete = [this](const std::string& path, const std::string& text) {
         NSLog(@"Local transcription complete: %s", text.c_str());
         if (!text.empty()) TextInjector::typeText(text);
-        deleteWavFile(wavPath);
+        removeAudio(path);
+        if (onTranscriptionSucceeded) onTranscriptionSucceeded();
         finishTranscription();
     };
 
-    m_transcriber->onTranscriptionError = [this](const std::string& wavPath, const std::string& error) {
+    m_transcriber->onTranscriptionError = [this](const std::string& path, const std::string& error) {
         NSLog(@"Local transcription error: %s", error.c_str());
-        deleteWavFile(wavPath);
+        keepFailedAudio(path);
+        if (onTranscriptionFailed) onTranscriptionFailed(shortReason(error));
         finishTranscription();
     };
 
@@ -131,9 +155,9 @@ void AppController::setState(State state)
     }
 }
 
-void AppController::enqueueTranscription(const std::string& wavFilePath)
+void AppController::enqueueTranscription(const std::string& audioFilePath)
 {
-    m_transcriptionQueue.push(wavFilePath);
+    m_transcriptionQueue.push(audioFilePath);
     if (m_transcribing) {
         // Recording just ended while another transcription is still running;
         // surface Transcribing state if the mic is no longer active.
@@ -154,7 +178,8 @@ void AppController::processNext()
 
         if (!hasGroq && !hasLocal) {
             NSLog(@"No transcription backend available");
-            deleteWavFile(path);
+            keepFailedAudio(path);
+            if (onTranscriptionFailed) onTranscriptionFailed("No transcription backend available");
             continue;
         }
 
@@ -162,8 +187,10 @@ void AppController::processNext()
         if (!m_recorder->isRecording()) setState(State::Transcribing);
 
         if (hasGroq) {
+            if (onStatusMessage) onStatusMessage("Sending to Groq", true);
             m_groqTranscriber->transcribe(path);
         } else {
+            if (onStatusMessage) onStatusMessage("Transcribing locally", true);
             m_transcriber->transcribe(path);
         }
         return;
@@ -184,14 +211,37 @@ void AppController::finishTranscription()
     }
 }
 
-void AppController::deleteWavFile(const std::string& wavFilePath)
+void AppController::removeAudio(const std::string& audioFilePath)
 {
-    if (wavFilePath.empty()) return;
-    NSString *path = [NSString stringWithUTF8String:wavFilePath.c_str()];
+    if (audioFilePath.empty()) return;
+    NSString *path = [NSString stringWithUTF8String:audioFilePath.c_str()];
     if (!path) return;
     NSError *err = nil;
     if (![[NSFileManager defaultManager] removeItemAtPath:path error:&err]) {
-        NSLog(@"Failed to delete WAV file %@: %@", path, err);
+        NSLog(@"Failed to delete audio file %@: %@", path, err);
+    }
+}
+
+// Move a recording that could not be transcribed into <cache>/failed/ so the user can
+// recover what was said. VoiceRecorder purges that folder after a week.
+void AppController::keepFailedAudio(const std::string& audioFilePath)
+{
+    if (audioFilePath.empty()) return;
+    NSString *path = [NSString stringWithUTF8String:audioFilePath.c_str()];
+    if (!path) return;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = [[NSString stringWithUTF8String:VoiceRecorder::cacheDirectory().c_str()]
+                     stringByAppendingPathComponent:@"failed"];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSString *dest = [dir stringByAppendingPathComponent:[path lastPathComponent]];
+    NSError *err = nil;
+    if ([fm moveItemAtPath:path toPath:dest error:&err]) {
+        NSLog(@"Kept failed audio at %@", dest);
+    } else {
+        NSLog(@"Failed to keep audio %@: %@", path, err);
+        [fm removeItemAtPath:path error:nil];
     }
 }
 
