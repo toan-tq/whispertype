@@ -115,7 +115,16 @@ tools/bench_local.py --download large-v3-turbo large-v3-turbo-q8_0 large-v3-turb
 
 Collect the test set with `KeepRecordings` (above), then correct the `.txt` files so they
 say what you actually said — until then WER only measures agreement with whatever engine
-produced them. `tools/bench_local.py --help` lists the options (VAD, threads, limits).
+produced them. WER/CER ignore case and punctuation, so the table also reports how many
+outputs contain punctuation and capitals (`punct %`, `caps %`): text typed into apps needs
+both. `tools/bench_local.py --help` lists the options (VAD, threads, limits).
+
+Converting and testing PhoWhisper (Vietnamese fine-tune of Whisper), the open questions
+from the November 2026 review and the manual test checklist are in
+[docs/review-2026-11-handover.md](docs/review-2026-11-handover.md).
+
+Without a Mac (e.g. in a Linux cloud session), `tools/linux-syntax-check/run.sh` syntax-checks
+`src/*.mm` against minimal Apple header stand-ins. It does not replace `./build.sh`.
 
 ## Build
 

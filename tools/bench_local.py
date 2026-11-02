@@ -59,6 +59,14 @@ def normalize(text):
     return " ".join(text.split())
 
 
+def has_punct(text):
+    return any(unicodedata.category(c).startswith("P") for c in text)
+
+
+def has_upper(text):
+    return any(c.isupper() for c in text)
+
+
 def edit_distance(ref, hyp):
     prev = list(range(len(hyp) + 1))
     for i, r in enumerate(ref, 1):
@@ -266,6 +274,9 @@ def run_engine(label, engine, samples, out_dir):
     lat, audio_total, lat_with_audio = [], 0.0, 0.0
     w_err = w_ref = c_err = c_ref = 0
     failures = 0
+    # WER/CER ignore case and punctuation, but text typed into apps needs both. Some
+    # fine-tunes (trained on lowercase, unpunctuated corpora) drop them: count it.
+    nonempty = punct = upper = 0
     for s in samples:
         try:
             secs, text = engine.transcribe(s["audio"])
@@ -275,6 +286,10 @@ def run_engine(label, engine, samples, out_dir):
             continue
         text = text.strip()
         lat.append(secs)
+        if text:
+            nonempty += 1
+            punct += has_punct(text)
+            upper += has_upper(text)
         if s["secs"]:
             audio_total += s["secs"]
             lat_with_audio += secs
@@ -305,6 +320,8 @@ def run_engine(label, engine, samples, out_dir):
         "wer": (100.0 * w_err / w_ref) if w_ref else float("nan"),
         "cer": (100.0 * c_err / c_ref) if c_ref else float("nan"),
         "rss_mb": engine.rss(),
+        "punct": (100.0 * punct / nonempty) if nonempty else float("nan"),
+        "upper": (100.0 * upper / nonempty) if nonempty else float("nan"),
     }
 
 
@@ -364,17 +381,21 @@ def main():
     def fmt(v, spec):
         return "-" if v is None or v != v else spec % v
 
-    header = "| engine | n | load s | mean s | p50 s | p90 s | max s | RTF | WER % | CER % | RAM MB |"
-    rows = [header, "|" + "---|" * 11]
+    header = ("| engine | n | load s | mean s | p50 s | p90 s | max s | RTF | WER % | CER % "
+              "| punct % | caps % | RAM MB |")
+    rows = [header, "|" + "---|" * 13]
     for r in results:
-        rows.append("| %s | %d%s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        rows.append("| %s | %d%s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r["engine"], r["n"], (" (+%d failed)" % r["failed"]) if r["failed"] else "",
             fmt(r["load_s"], "%.1f"), fmt(r["mean_s"], "%.2f"), fmt(r["p50_s"], "%.2f"),
             fmt(r["p90_s"], "%.2f"), fmt(r["max_s"], "%.2f"), fmt(r["rtf"], "%.3f"),
-            fmt(r["wer"], "%.1f"), fmt(r["cer"], "%.1f"), fmt(r["rss_mb"], "%.0f")))
+            fmt(r["wer"], "%.1f"), fmt(r["cer"], "%.1f"), fmt(r["punct"], "%.0f"),
+            fmt(r["upper"], "%.0f"), fmt(r["rss_mb"], "%.0f")))
     table = "\n".join(rows)
     print(table)
-    print("\nRTF = processing time / audio time (lower is faster). Hypotheses are in %s/<engine>/" % args.out)
+    print("\nRTF = processing time / audio time (lower is faster). WER/CER ignore case and punctuation;")
+    print("punct % / caps % = share of outputs with any punctuation / capital letter (dictation needs both).")
+    print("Hypotheses are in %s/<engine>/" % args.out)
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "summary.md"), "w", encoding="utf-8") as f:
         f.write(table + "\n")
