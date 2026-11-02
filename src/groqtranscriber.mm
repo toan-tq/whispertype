@@ -3,6 +3,7 @@
 
 static NSString *const kGroqAPIKeyDefault = @"GroqAPIKey";
 static NSString *const kGroqEndpoint = @"https://api.groq.com/openai/v1/audio/transcriptions";
+static NSString *const kGroqModelsEndpoint = @"https://api.groq.com/openai/v1/models";
 static NSString *const kGroqModel = @"whisper-large-v3";
 static NSString *const kGroqLanguage = @"vi";
 
@@ -10,10 +11,23 @@ static NSString *const kGroqLanguage = @"vi";
 // ~1 s, p90 ~6 s; the long waits were uploads crawling at 20-90 KB/s. The idle timeout
 // catches a stalled socket, the total timeout caps a crawling transfer. One retry, then
 // the controller falls back or gives up and keeps the audio file.
+//
+// The total budget grows with the upload: 45 s covers the default 30 s recording (~1 MB of
+// WAV), but MaxRecordingSeconds allows 600 s (~19 MB), which a flat 45 s would always cut
+// off. Budget = 30 s + size at 64 KB/s, never less than 45 s.
 static const NSTimeInterval kIdleTimeout = 20.0;
 static const NSTimeInterval kTotalTimeout = 45.0;
+static const NSTimeInterval kTotalTimeoutBase = 30.0;
+static const double kMinUploadBytesPerSecond = 64.0 * 1024.0;
 static const int kMaxAttempts = 2;
 static const NSTimeInterval kRetryDelay = 2.0;
+
+// Opening a connection to Groq costs DNS + TCP + TLS: several round trips, which on a
+// long-distance link adds up to hundreds of milliseconds, paid after the user stops
+// talking. prewarm() opens it while they are still speaking. Skipped when the session
+// talked to Groq recently and the connection is likely still open. The "Groq timing"
+// log line shows whether an upload got a "reused" or a "new" connection.
+static const NSTimeInterval kPrewarmInterval = 20.0;
 
 static NSTimeInterval monotonicNow() { return [NSProcessInfo processInfo].systemUptime; }
 static std::string cstr(NSString *s) { const char *c = [s UTF8String]; return c ? c : ""; }
@@ -25,6 +39,8 @@ static std::string cstr(NSString *s) { const char *c = [s UTF8String]; return c 
 @property (nonatomic, strong) NSMutableData *body;
 @property (nonatomic, assign) int lastPercent;
 @property (nonatomic, assign) NSTimeInterval startedAt;
+// Set (main thread) when the total budget ran out and the task was cancelled for it.
+@property (atomic, assign) BOOL timedOut;
 @end
 
 @implementation GroqRequest
@@ -32,14 +48,21 @@ static std::string cstr(NSString *s) { const char *c = [s UTF8String]; return c 
 
 typedef void (^GroqProgressBlock)(NSString *path, NSString *status);
 typedef void (^GroqFinishedBlock)(NSString *path, int attempt, NSTimeInterval elapsed,
-                                  NSData *body, NSHTTPURLResponse *response, NSError *error);
+                                  NSData *body, NSHTTPURLResponse *response, NSError *error,
+                                  BOOL timedOut);
 
 @interface GroqSessionDelegate : NSObject <NSURLSessionDataDelegate>
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, GroqRequest *> *requests;
 @property (nonatomic, copy) GroqProgressBlock onProgress;
 @property (nonatomic, copy) GroqFinishedBlock onFinished;
-- (void)track:(NSURLSessionTask *)task path:(NSString *)path attempt:(int)attempt;
+- (GroqRequest *)track:(NSURLSessionTask *)task path:(NSString *)path attempt:(int)attempt;
 @end
+
+static NSString *formatMs(NSDate *from, NSDate *to)
+{
+    if (!from || !to) return @"-";
+    return [NSString stringWithFormat:@"%.0f ms", [to timeIntervalSinceDate:from] * 1000.0];
+}
 
 @implementation GroqSessionDelegate
 
@@ -50,7 +73,7 @@ typedef void (^GroqFinishedBlock)(NSString *path, int attempt, NSTimeInterval el
     return self;
 }
 
-- (void)track:(NSURLSessionTask *)task path:(NSString *)path attempt:(int)attempt {
+- (GroqRequest *)track:(NSURLSessionTask *)task path:(NSString *)path attempt:(int)attempt {
     GroqRequest *req = [[GroqRequest alloc] init];
     req.path = path;
     req.attempt = attempt;
@@ -58,6 +81,7 @@ typedef void (^GroqFinishedBlock)(NSString *path, int attempt, NSTimeInterval el
     req.lastPercent = -1;
     req.startedAt = monotonicNow();
     @synchronized (self) { self.requests[@(task.taskIdentifier)] = req; }
+    return req;
 }
 
 - (GroqRequest *)requestForTask:(NSURLSessionTask *)task {
@@ -96,7 +120,37 @@ didCompleteWithError:(NSError *)error {
     NSTimeInterval elapsed = monotonicNow() - req.startedAt;
     NSHTTPURLResponse *http = [task.response isKindOfClass:[NSHTTPURLResponse class]]
         ? (NSHTTPURLResponse *)task.response : nil;
-    if (self.onFinished) self.onFinished(req.path, req.attempt, elapsed, req.body, http, error);
+    if (self.onFinished) self.onFinished(req.path, req.attempt, elapsed, req.body, http, error, req.timedOut);
+}
+
+// One line per request telling where the time went, e.g.
+//   Groq timing (upload): h2, new connection, dns 3 ms, connect 410 ms (tls 205 ms),
+//   upload 2210 ms for 384 KB (174 KB/s), server 620 ms, download 1 ms, total 3260 ms
+// "upload" large and KB/s low = the network path; "server" large = Groq itself;
+// "connect" large on every request = connections are not being reused.
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
+didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics {
+    (void)session;
+    NSURLSessionTaskTransactionMetrics *m = metrics.transactionMetrics.lastObject;
+    if (!m) return;
+    BOOL isUpload = [task.originalRequest.HTTPMethod isEqualToString:@"POST"];
+    int64_t sent = m.countOfRequestBodyBytesSent;
+    NSTimeInterval uploadSecs = (m.requestStartDate && m.requestEndDate)
+        ? [m.requestEndDate timeIntervalSinceDate:m.requestStartDate] : 0;
+    NSString *rate = (isUpload && uploadSecs > 0.001)
+        ? [NSString stringWithFormat:@" (%.0f KB/s)", sent / 1024.0 / uploadSecs] : @"";
+    NSLog(@"Groq timing (%@): %@, %@ connection, dns %@, connect %@ (tls %@), "
+          @"upload %@ for %.0f KB%@, server %@, download %@, total %.0f ms",
+          isUpload ? @"upload" : @"prewarm",
+          m.networkProtocolName ?: @"?",
+          m.isReusedConnection ? @"reused" : @"new",
+          formatMs(m.domainLookupStartDate, m.domainLookupEndDate),
+          formatMs(m.connectStartDate, m.connectEndDate),
+          formatMs(m.secureConnectionStartDate, m.secureConnectionEndDate),
+          formatMs(m.requestStartDate, m.requestEndDate), sent / 1024.0, rate,
+          formatMs(m.requestEndDate, m.responseStartDate),
+          formatMs(m.responseStartDate, m.responseEndDate),
+          metrics.taskInterval.duration * 1000.0);
 }
 
 @end
@@ -129,20 +183,22 @@ GroqTranscriber::GroqTranscriber()
         });
     };
     delegate.onFinished = ^(NSString *path, int attempt, NSTimeInterval elapsed,
-                            NSData *body, NSHTTPURLResponse *response, NSError *error) {
+                            NSData *body, NSHTTPURLResponse *response, NSError *error,
+                            BOOL timedOut) {
         std::string p = cstr(path);
         long errorCode = error ? (long)error.code : 0;
         std::string errorText = error ? cstr(error.localizedDescription) : "";
         long status = response ? (long)response.statusCode : 0;
         std::string responseBody = cstr([[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding]);
         dispatch_async(dispatch_get_main_queue(), ^{
-            completeRequest(p, attempt, elapsed, errorCode, errorText, status, responseBody);
+            completeRequest(p, attempt, elapsed, errorCode, errorText, status, responseBody, timedOut);
         });
     };
 
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
     config.timeoutIntervalForRequest = kIdleTimeout;
-    config.timeoutIntervalForResource = kTotalTimeout;
+    // The real total budget is per request (see startRequest); this is only a backstop.
+    config.timeoutIntervalForResource = 3600.0;
     config.waitsForConnectivity = NO;
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config
                                                           delegate:delegate
@@ -180,6 +236,24 @@ void GroqTranscriber::transcribe(const std::string& audioFilePath)
         return;
     }
     startRequest(audioFilePath, 1);
+}
+
+void GroqTranscriber::prewarm()
+{
+    if (m_apiKey.empty() || !m_session) return;
+    double now = monotonicNow();
+    if (m_lastNetworkAt > 0 && now - m_lastNetworkAt < kPrewarmInterval) return;
+    m_lastNetworkAt = now;
+
+    // Any small authenticated request opens the connection. Listing models is not a
+    // transcription, so it costs none of the audio-seconds quota. The response is ignored
+    // (the delegate does not track this task) apart from its timing line.
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kGroqModelsEndpoint]];
+    request.timeoutInterval = 10.0;
+    [request setValue:[NSString stringWithFormat:@"Bearer %s", m_apiKey.c_str()]
+   forHTTPHeaderField:@"Authorization"];
+    NSURLSession *session = (__bridge NSURLSession *)m_session;
+    [[session dataTaskWithRequest:request] resume];
 }
 
 void GroqTranscriber::startRequest(const std::string& path, int attempt)
@@ -225,20 +299,38 @@ void GroqTranscriber::startRequest(const std::string& path, int attempt)
     NSURLSession *session = (__bridge NSURLSession *)m_session;
     GroqSessionDelegate *delegate = (__bridge GroqSessionDelegate *)m_delegate;
     NSURLSessionUploadTask *task = [session uploadTaskWithRequest:request fromData:body];
-    [delegate track:task path:nsPath attempt:attempt];
+    GroqRequest *req = [delegate track:task path:nsPath attempt:attempt];
 
+    NSTimeInterval total = MAX(kTotalTimeout, kTotalTimeoutBase + body.length / kMinUploadBytesPerSecond);
     NSLog(@"Groq request: %lu bytes (%@), attempt %d/%d, timeouts idle %.0fs total %.0fs",
-          (unsigned long)body.length, ext, attempt, kMaxAttempts, kIdleTimeout, kTotalTimeout);
+          (unsigned long)body.length, ext, attempt, kMaxAttempts, kIdleTimeout, total);
     if (onStatus) onStatus(path, attempt > 1 ? "Retrying upload" : "Uploading");
+    m_lastNetworkAt = monotonicNow();
     [task resume];
+
+    __weak NSURLSessionTask *weakTask = task;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(total * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        NSURLSessionTask *t = weakTask;
+        if (t && t.state == NSURLSessionTaskStateRunning) {
+            req.timedOut = YES;
+            [t cancel];
+        }
+    });
 }
 
 void GroqTranscriber::completeRequest(const std::string& path, int attempt, double elapsed,
                                       long errorCode, const std::string& errorText,
-                                      long httpStatus, const std::string& responseBody)
+                                      long httpStatus, const std::string& responseBody,
+                                      bool timedOut)
 {
     if (errorCode != 0) {
         std::string msg;
+        if (errorCode == NSURLErrorCancelled && timedOut) {
+            msg = cstr([NSString stringWithFormat:@"[groq_network_error] Timed out after %.0fs (upload too slow)", elapsed]);
+            handleFailure(path, attempt, msg, true);
+            return;
+        }
         if (errorCode == NSURLErrorTimedOut) {
             msg = cstr([NSString stringWithFormat:@"[groq_network_error] Timed out after %.0fs", elapsed]);
         } else {

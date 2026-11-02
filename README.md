@@ -6,6 +6,7 @@ A native macOS menu bar app that transcribes your voice and types it into any fo
 
 - **Menu bar app** — runs quietly in your menu bar, no dock icon
 - **Global hotkey** — press `⌥ Space` (Option+Space) to start/stop recording from anywhere
+  (exactly Option: `⌘⌥ Space` and friends pass through; holding the keys does not re-toggle)
 - **Groq cloud transcription** — fast, accurate transcription via Groq's Whisper API
 - **Local fallback** — optional whisper.cpp fallback when Groq is rate-limited or unavailable
 - **Vietnamese-first** — tuned for Vietnamese (`vi`), works with other languages too
@@ -44,6 +45,26 @@ defaults write com.tqt.whispertype LocalModelEnabled -bool true
 
 Or toggle it in the menu bar menu. When enabled, the app downloads `ggml-large-v3-turbo.bin` (~1.6 GB) to `~/Library/Application Support/TQT/Whispertype/` on first use.
 
+Use a smaller quantized model to cut memory and load time (the f16 turbo model keeps
+~2 GB resident while the local model is on). Any file from the
+[whisper.cpp model repo](https://huggingface.co/ggerganov/whisper.cpp) works by name, and
+an absolute path loads your own conversion (e.g. PhoWhisper):
+
+```bash
+defaults write com.tqt.whispertype LocalModelFile -string ggml-large-v3-turbo-q5_0.bin   # ~550 MB
+defaults write com.tqt.whispertype LocalModelFile -string ~/models/ggml-phowhisper-medium.bin
+defaults write com.tqt.whispertype LocalModelURL  -string https://example.com/my-model.bin  # optional
+```
+
+To transcribe on the Mac first and only use Groq as the fallback (no upload wait), tick
+**Use Local Model First** in the menu, or:
+
+```bash
+defaults write com.tqt.whispertype PreferLocalModel -bool true
+```
+
+Turning the local model off in the menu unloads it and frees its memory.
+
 ### 3. (Optional) Tune recording
 
 ```bash
@@ -53,7 +74,48 @@ defaults write com.tqt.whispertype MaxRecordingSeconds -int 60
 # Recording format sent to Groq: wav (default, best transcript quality), flac or aac
 # (smaller uploads, but both measured worse on Vietnamese; opt-in only)
 defaults write com.tqt.whispertype RecordingFormat -string wav
+
+# Keep every transcribed recording + its text in ~/Library/Caches/com.tqt.whispertype/samples/
+# (a test set for tools/bench_local.py; not purged automatically)
+defaults write com.tqt.whispertype KeepRecordings -bool true
 ```
+
+## Where does the time go?
+
+Every dictation logs one timing line, and every Groq request one network breakdown:
+
+```bash
+log stream --style compact --predicate 'process == "Whispertype"' | grep -E "Timing|Groq timing|Recording started|Local transcription"
+```
+
+```
+Recording started in 85 ms from MacBook Pro Microphone (built-in) to voice_….wav
+Groq timing (upload): h2, reused connection, dns -, connect - (tls -), upload 1210 ms for 384 KB (317 KB/s), server 540 ms, download 1 ms, total 1790 ms
+Timing: stop->file 6 ms, queued 0 ms, groq 1.83 s, typing 22 ms => stop->text 1.86 s
+```
+
+- `Recording started in … ms` large, or the input says `Bluetooth`: the microphone is the
+  problem. A Bluetooth headset has to switch to its call profile first (slow start, first
+  words clipped, narrowband audio) — pick the built-in microphone in System Settings → Sound.
+- `upload … KB/s` low: the network path to Groq. Local transcription avoids it entirely.
+- `server` large: Groq itself. `new connection` with a large `connect` on every request:
+  connections are not reused (the app pre-opens one when recording starts).
+- `queued` large: an earlier recording was still being transcribed.
+
+## Comparing local models
+
+`tools/bench_local.py` runs whisper.cpp models (and optionally Groq) over your own
+recordings and reports latency, real-time factor, memory and WER/CER against reference
+transcripts:
+
+```bash
+tools/build-bench.sh   # builds build-bench/bin/whisper-server from the submodule (Metal)
+tools/bench_local.py --download large-v3-turbo large-v3-turbo-q8_0 large-v3-turbo-q5_0 groq:whisper-large-v3
+```
+
+Collect the test set with `KeepRecordings` (above), then correct the `.txt` files so they
+say what you actually said — until then WER only measures agreement with whatever engine
+produced them. `tools/bench_local.py --help` lists the options (VAD, threads, limits).
 
 ## Build
 
@@ -135,10 +197,12 @@ Pure native macOS — no Electron, no Qt, no web views.
 - **Audio capture**: AVFoundation (`AVAudioRecorder`, 16 kHz mono WAV by default)
 - **Primary transcription**: Groq API (`whisper-large-v3`, cloud) with upload progress,
   explicit timeouts and one retry
-- **Fallback transcription**: whisper.cpp (local, on-device)
+- **Fallback transcription**: whisper.cpp (local, on-device; model loaded and run on a
+  background queue, or used first with PreferLocalModel)
 - **Text input**: CGEvent keyboard simulation
 - **UI**: NSStatusItem (menu bar) with SF Symbols
-- **Concurrency**: GCD (Grand Central Dispatch), serialized transcription queue
+- **Concurrency**: GCD (Grand Central Dispatch), serialized transcription queue; the
+  keyboard event tap runs on its own thread so a busy main thread never delays typing
 - **Local model**: `ggml-large-v3-turbo.bin` (~1.6 GB, auto-downloaded to `~/Library/Application Support/TQT/Whispertype/`)
 
 ## License

@@ -97,8 +97,11 @@ void TextInjector::typeText(const std::string& text)
     NSString *nsText = [NSString stringWithUTF8String:text.c_str()];
     if (!nsText) return;
 
-    NSString *trimmed = [nsText stringByTrimmingCharactersInSet:
-        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // Whisper usually ends a sentence with punctuation, so a lone "Enter" arrives as
+    // "Enter." — compare standalone commands without it.
+    NSMutableCharacterSet *trimSet = [NSMutableCharacterSet whitespaceAndNewlineCharacterSet];
+    [trimSet formUnionWithCharacterSet:[NSCharacterSet punctuationCharacterSet]];
+    NSString *trimmed = [nsText stringByTrimmingCharactersInSet:trimSet];
 
     // Check standalone commands first
     for (NSValue *val in voiceCommands()) {

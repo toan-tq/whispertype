@@ -39,6 +39,7 @@ private:
     NSMenuItem *m_statusMenuItem;
     NSMenuItem *m_lastErrorItem;
     NSMenuItem *m_localModelItem;
+    NSMenuItem *m_preferLocalItem;
     StatusBarDelegate *m_delegate;
     dispatch_source_t m_clock;
     double m_phaseStartedAt;

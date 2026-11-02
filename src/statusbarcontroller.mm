@@ -5,9 +5,11 @@
 @interface StatusBarDelegate : NSObject
 @property (nonatomic, copy) void (^onQuit)(void);
 @property (nonatomic, copy) void (^onToggleLocalModel)(void);
+@property (nonatomic, copy) void (^onTogglePreferLocal)(void);
 @property (nonatomic, copy) void (^onShowFailed)(void);
 - (void)quitApp:(id)sender;
 - (void)toggleLocalModel:(id)sender;
+- (void)togglePreferLocal:(id)sender;
 - (void)showFailedRecordings:(id)sender;
 @end
 
@@ -28,6 +30,13 @@
     }
 }
 
+- (void)togglePreferLocal:(id)sender {
+    (void)sender;
+    if (self.onTogglePreferLocal) {
+        self.onTogglePreferLocal();
+    }
+}
+
 - (void)showFailedRecordings:(id)sender {
     (void)sender;
     if (self.onShowFailed) {
@@ -45,6 +54,7 @@ StatusBarController::StatusBarController(AppController *controller)
     , m_statusMenuItem(nil)
     , m_lastErrorItem(nil)
     , m_localModelItem(nil)
+    , m_preferLocalItem(nil)
     , m_delegate(nil)
     , m_clock(nil)
     , m_phaseStartedAt(0)
@@ -66,6 +76,10 @@ void StatusBarController::setup()
     m_delegate.onToggleLocalModel = ^{
         bool newState = !m_controller->isLocalModelEnabled();
         m_controller->setLocalModelEnabled(newState);
+        updateLocalModelToggle();
+    };
+    m_delegate.onTogglePreferLocal = ^{
+        m_controller->setPreferLocal(!m_controller->isPreferLocal());
         updateLocalModelToggle();
     };
     m_delegate.onShowFailed = ^{
@@ -99,6 +113,10 @@ void StatusBarController::setup()
     m_localModelItem = [m_menu addItemWithTitle:@"Local Model (fallback)"
                                          action:@selector(toggleLocalModel:) keyEquivalent:@""];
     [m_localModelItem setTarget:m_delegate];
+
+    m_preferLocalItem = [m_menu addItemWithTitle:@"Use Local Model First (no upload)"
+                                          action:@selector(togglePreferLocal:) keyEquivalent:@""];
+    [m_preferLocalItem setTarget:m_delegate];
     updateLocalModelToggle();
 
     NSMenuItem *failedItem = [m_menu addItemWithTitle:@"Show Failed Recordings"
@@ -165,6 +183,10 @@ void StatusBarController::setup()
     m_controller->onDownloadStarted = [this]() {
         updateStatusText("Downloading Whisper model...");
     };
+
+    m_controller->onLocalModelError = [this](const std::string& reason) {
+        updateStatusText("Local model: " + reason);
+    };
 }
 
 void StatusBarController::updateIcon(AppController::State state)
@@ -203,6 +225,9 @@ void StatusBarController::updateLocalModelToggle()
 {
     if (m_localModelItem) {
         [m_localModelItem setState:m_controller->isLocalModelEnabled() ? NSControlStateValueOn : NSControlStateValueOff];
+    }
+    if (m_preferLocalItem) {
+        [m_preferLocalItem setState:m_controller->isPreferLocal() ? NSControlStateValueOn : NSControlStateValueOff];
     }
 }
 

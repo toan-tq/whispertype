@@ -9,6 +9,8 @@ public:
 
     void transcribe(const std::string& audioFilePath);
     bool isReady() const;
+    // Open the connection to Groq ahead of the upload (call when recording starts).
+    void prewarm();
 
     std::function<void(const std::string& path, const std::string& text)> onTranscriptionComplete;
     // Error strings carry a tag prefix the controller keys on:
@@ -24,10 +26,11 @@ private:
     void startRequest(const std::string& path, int attempt);
     void completeRequest(const std::string& path, int attempt, double elapsed,
                          long errorCode, const std::string& errorText,
-                         long httpStatus, const std::string& responseBody);
+                         long httpStatus, const std::string& responseBody, bool timedOut);
     void handleFailure(const std::string& path, int attempt, const std::string& error, bool retryable);
 
     std::string m_apiKey;
     void *m_session = nullptr;   // NSURLSession*
     void *m_delegate = nullptr;  // GroqSessionDelegate*
+    double m_lastNetworkAt = 0;  // monotonic seconds of the last request we started
 };
