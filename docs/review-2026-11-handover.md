@@ -296,10 +296,116 @@ Mong đợi: `Whisper model ggml-phowhisper-medium-q5_0.bin loaded in N s`, mỗ
 
 ## 8. Kết quả test (session kiểm tra điền vào)
 
+Session kiểm tra 2026-11-03, M1 Pro / 16 GB, macOS 27.2, whisper.cpp submodule `941bdab` (Metal).
+
+**Bộ test.** Chưa có `samples/` (cần app mới + `KeepRecordings`), và `failed/` chỉ có 2 bản ghi
+thật, không có `.txt`. Nên dùng **FLEURS vi_vn test**: 40 câu ngẫu nhiên (seed 42), đáp án
+`raw_transcription` có dấu câu và chữ hoa, chuyển sang s16 16 kHz như app ghi. Lưu ý: FLEURS là
+giọng đọc câu Wikipedia, nhiều tên nước ngoài, nên **thiên về Whisper gốc**. Bộ này không thay được
+giọng của bạn.
+
+PhoWhisper-medium tự convert từ `vinai/PhoWhisper-medium`:
+- `pytorch_model.bin` → `model.safetensors` (`torch.load(weights_only=True)`), vì transformers 5.2 +
+  torch 2.5 từ chối nạp `.bin`.
+- Sau đó chạy `convert-h5-to-ggml.py`. File f16 nặng 1.533.763.076 byte, trùng kích thước với
+  `dongxiat/ggml-PhoWhisper-medium`.
+- Server log: `type = 4 (medium)`, `n_mels = 80`, không có lỗi tensor.
+
 | Ngày | Máy (chip/RAM) | Model | WER % | punct % | caps % | p50 s | p90 s | RAM MB | Ghi chú |
 |---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | |
+| 2026-11-03 | M1 Pro / 16 GB | PhoWhisper-medium f16 | 9,7 | 100 | **0** | 1,02 | 1,27 | 1854 | FLEURS 40; CER 6,8; **0 dấu phẩy** (đáp án 50), không chia câu |
+| 2026-11-03 | M1 Pro / 16 GB | PhoWhisper-medium q8_0 | 9,7 | 100 | 0 | 0,98 | 1,26 | 1119 | như f16 |
+| 2026-11-03 | M1 Pro / 16 GB | PhoWhisper-medium q5_0 | 9,6 | 100 | 0 | 0,94 | 1,16 | 827 | như f16 |
+| 2026-11-03 | M1 Pro / 16 GB | large-v3-turbo q5_0 | 10,0 | 98 | 100 | 0,98 | 1,05 | 736 | CER 5,1; 55 dấu phẩy, 6/7 chỗ chia câu |
+| 2026-11-03 | M1 Pro / 16 GB | large-v3-turbo f16 | 9,7 | 98 | 100 | 0,87 | 0,95 | 1818 | CER 4,9 |
+| 2026-11-03 | M1 Pro / 16 GB | groq:whisper-large-v3 | 9,2 | 89 | 100 | 2,84 | 4,94 | – | **19 câu đầu** (giới hạn RPM); cùng 19 câu: turbo-q5 9,9 / PhoWhisper-q5 10,2. Mạng chiều 16:50, không phải giờ tối |
+| 2026-11-03 | M1 Pro / 16 GB | turbo-q5_0 + VAD Silero v6.2.0 | 10,9 | 98 | 100 | 1,04 | 1,11 | 743 | VAD làm WER tệ hơn (cắt đầu câu) |
+| 2026-11-03 | M1 Pro / 16 GB | PhoWhisper-q5_0 + VAD | 8,8 | 100 | 0 | 0,98 | 1,21 | 838 | |
 
-Ghi chú về từng mục A1–A12, D1–D10 (đúng/sai/khác):
+**Hai bản ghi giọng thật trong `failed/`** (không có đáp án, `build-bench/results-real/`):
 
--
+| Engine | `…222212_138` (5,6 s) | `…214137_081` (1,7 s) |
+|---|---|---|
+| Groq large-v3 | Nếu nói 3-5 ngày Tết một lần thì phải có lý do chứ. | Lâu lâu thế bạn có lang chạy không đấy? |
+| turbo f16 / q5_0 | Nếu nói 3 đến 5 ngày Tết một lần nó phải có lý do chứ | Bao lâu thế bạn có đang chạy không đấy? |
+| PhoWhisper q5_0 | nếu nói ba đến năm ngày tết là lần nó phải có lý do chứ. | bao lâu thế bạn có đang chạy không đấy. |
+| turbo q5_0 + VAD | (như không VAD) | **Thế** bạn có lang chạy không đấy (mất "Bao lâu") |
+
+**Ảo giác (A11)**: 5 s im lặng, nhiễu hồng nhẹ và nhiễu nâu (`build-bench/results-silence/`).
+
+| Engine | Kết quả |
+|---|---|
+| Groq | "Hãy subscribe cho kênh La La School Để không bỏ lỡ những video hấp dẫn" / "Cảm ơn các bạn đã theo dõi." |
+| turbo (cả hai bản) | Giống Groq, thêm "… và hẹn gặp lại." |
+| PhoWhisper | Câu bịa trông như thật ("đó là sự tấn công lớn nhất của hội việt nam vào thời điểm này.") nên **không lọc được bằng danh sách** |
+| Có VAD | Cả 3 file ra rỗng (0,02 s) |
+
+**Kết luận**
+
+1. **PhoWhisper-medium không dùng gõ trực tiếp được.** Toàn chữ thường, không có dấu phẩy, mỗi
+   đoạn chỉ một dấu chấm cuối (kể cả câu hỏi), số viết bằng chữ ("ba đến năm"). WER trên FLEURS
+   ngang turbo; CER tệ hơn (6,8 so với 4,9), chủ yếu do tên riêng. Muốn dùng phải thêm model khôi
+   phục dấu câu và chữ hoa.
+2. **large-v3-turbo-q5_0 là ứng viên local tốt nhất cho máy này:**
+   - WER 10,0 so với Groq 9,2 trên cùng 19 câu là 9,9: chênh 0,7 điểm, trong ngưỡng 5.4.
+   - Dấu câu và chữ hoa đầy đủ.
+   - p50 ~1,0 s, p90 1,05 s, so với Groq p50 2,8 s / p90 4,9 s **ngay cả lúc mạng tốt**.
+   - RAM ~740 MB.
+   - Trên 2 câu thật, turbo cho câu 2 hợp lý hơn Groq ("Bao lâu…đang chạy" so với "Lâu lâu…lang chạy");
+     chủ dự án cần xác nhận câu đã nói.
+   - f16 nhanh hơn một chút (0,87 s) nhưng tốn 1,8 GB, không đáng.
+3. **Ảo giác có thật và xảy ra cả với Groq hiện tại.** VAD chặn được 100 %, nhưng nếu dùng VAD để
+   *cắt* audio thì mất đầu câu ngắn. Đề xuất: dùng VAD làm **cổng**: không có tiếng nói → không gửi
+   và không gõ gì; có tiếng nói → gửi nguyên audio. Hoặc tăng `--vad-speech-pad-ms`, nhưng chưa thử.
+
+**Ghi chú về từng mục A1–A12, D1–D10**
+
+- **A1–A7, A9: chưa kiểm.** Cần cài app mới vào /Applications (phải cấp lại quyền) và test tay theo
+  mục 6. Session này chỉ build `--no-install` để khỏi đụng quyền của bản đang dùng.
+- **A8: đạt.** `./build.sh --no-install` (Xcode SDK 26.5, target 26.0) build sạch; không có cảnh báo
+  nào trong `src/`. Các tên API viết theo trí nhớ đều đúng.
+- **A10: đúng.**
+  - `ffmpeg -c:a flac -sample_fmt s16` trên 2 bản ghi thật cho 61 % và 54 % kích thước WAV.
+  - Giải mã ra PCM giống hệt từng bit (md5 khớp), nên transcript chỉ có thể khác do Groq không
+    tất định.
+  - Bản FLAC kém trước đây là do `AVAudioRecorder` ghi 24-bit. Muốn dùng FLAC phải tự mã hoá 16-bit
+    (vd. `AVAudioFile`/`ExtAudioFile` với ASBD 16-bit, hoặc libFLAC), không qua `AVAudioRecorder`.
+  - Chưa gửi bản FLAC lên Groq.
+- **A11: đúng, nặng hơn dự đoán** (bảng trên).
+- **A12: đúng.** `whisper-server` nhận `language`, `no_timestamps`, `temperature`,
+  `response_format=json`; output không có timestamp.
+- **Mới: `tools/bench_local.py` chưa bao giờ đo được Groq.** Cloudflare của Groq trả 403
+  (error code 1010) cho User-Agent `Python-urllib/x.y`, trong khi curl với cùng key trả 200. Đã sửa:
+  gửi User-Agent `whispertype-bench/1.0`.
+- **Mới: bằng chứng cho B7/B2 trên bản đang cài.** 57/59 file trong `failed/` là WAV rỗng 4 KB (chỉ
+  header). Các loạt lớn có 15 và 13 file (18/10) và 21 file (26/10), mỗi file cách nhau ~67 ms
+  (nhịp auto-repeat); ngoài ra có loạt nhỏ 1–3 file vào 4/10, 5/10, 9/10, 16/10.
+- **D1: đúng.** Các cột là VIVOS / Common Voice / VLSP Task 1 / TB; số đã chuẩn hoá (bỏ hoa và dấu
+  câu). Số của PhoWhisper-large chép từ bài PhoWhisper.
+- **D2: đúng số, nhưng là cột N-WER (bỏ hoa và dấu câu), trung bình bộ "Natural".**
+  - Đứng đầu là **hynt/Zipformer-30M-RNNT-6000h 6,77**, đoạn trích cũ bỏ sót.
+  - PhoWhisper-medium có O-WER (giữ hoa và dấu câu) tốt nhất bảng là 16,73, nhưng vẫn gấp đôi N-WER.
+  - Không có large-v3/turbo/PhoWhisper-large, không có cột tốc độ.
+- **D3: sai nguồn.**
+  - Bài arXiv 2603.14779 (PhoASR, VinAI) không nói gì về Zipformer. Các số 12,29 / 10,40 / 0,3 s
+    nằm trên model card hynt/Zipformer-30M.
+  - Bài PhoASR cho thấy PhoWhisper-small O-WER 33,90 so với N-WER 8,97, tức yếu dấu câu/chữ hoa,
+    khớp với kết luận 1.
+- **D4: 6.000 giờ đúng.**
+  - Con số ~70.000 giờ của `phostt` là của model khác (`sherpa-onnx-zipformer-vi-2025-04-20`,
+    VietASR 68M).
+  - Giấy phép Zipformer-30M là **CC-BY-NC-ND-4.0**: không thương mại, không phái sinh.
+- **D5: đúng** (arXiv 2505.21527, Bảng 3).
+- **D6: đúng** (Qwen3-ASR có tiếng Việt; card chính thức không có WER riêng cho tiếng Việt).
+- **D7: đã chạy.** `SpeechTranscriber`: không có `vi` (0/45 locale). `DictationTranscriber`: **có
+  `vi_VN`** (trong 54). Đây là hướng on-device không cần model riêng, chưa đánh giá chất lượng.
+- **D8: sai.** HF có `dongxiat/ggml-PhoWhisper-{base,small,medium}`, `Briansss/ggml-PhoWhisper-large`,
+  `hoangecg/phowhisper-large-ggml`.
+- **D9: cả hai con số đều cũ.**
+  - Mới nhất là v1.9.5 (2026-10-06): có encoder trên Apple Neural Engine (tuỳ chọn) và tinh chỉnh
+    Metal cho M1–M3 (v1.9.4).
+  - Submodule đã bật flash-attn mặc định.
+- **D10:**
+  - Giấy phép BSD-3-Clause; 80 mel, 24+24 lớp, d_model 1024; dữ liệu 844 giờ.
+  - WER trong bài: medium VIVOS 4,97 / CMV 8,27 / VLSP T1 14,12.
+  - Model card/bài báo không nói gì về dấu câu; thực tế: **không có chữ hoa và dấu phẩy**.

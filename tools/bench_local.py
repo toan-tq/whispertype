@@ -109,6 +109,9 @@ def post(url, fields, file_path, headers=None, timeout=600):
     body, ctype = multipart(fields, "file", file_path)
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", ctype)
+    # Groq sits behind Cloudflare, which rejects urllib's default "Python-urllib/x.y" agent
+    # with 403 (error code 1010).
+    req.add_header("User-Agent", "whispertype-bench/1.0")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     t0 = time.perf_counter()
