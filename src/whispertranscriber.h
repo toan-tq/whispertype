@@ -4,6 +4,7 @@
 #include <string>
 
 struct whisper_context;
+struct whisper_vad_context;
 
 // Local transcription with whisper.cpp. The public methods are main-thread only. All work on
 // the whisper context (load, inference, free) runs in order on one serial background queue,
@@ -39,10 +40,12 @@ private:
     void releaseDownloadSession();
     std::string getModelPath() const;
     std::string getModelUrl() const;
+    void loadVad();                                     // on m_queue
     void doTranscribe(const std::string& wavFilePath);  // on m_queue
     void postError(std::string wavFilePath, std::string error);
 
     whisper_context *m_ctx = nullptr;   // only touched on m_queue
+    whisper_vad_context *m_vad = nullptr;  // only touched on m_queue; null = no speech gate
     dispatch_queue_t m_queue;
     unsigned m_loadGeneration = 0;      // bumped by release(); stale loads are discarded
     bool m_isLoading = false;

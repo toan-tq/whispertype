@@ -398,6 +398,21 @@ PhoWhisper-medium tự convert từ `vinai/PhoWhisper-medium`:
     nói từ VAD).
   - Cần bộ ghi âm giọng của chủ dự án để chốt.
 
+**Chốt 2026-11-03: dùng PhoWhisper-medium q5_0 chạy local; chủ dự án không muốn thêm model dấu câu.**
+- Cấu hình: `LocalModelFile=~/models/ggml-phowhisper-medium-q5_0.bin`, `LocalModelEnabled`,
+  `PreferLocalModel`, `KeepRecordings`.
+- Thực tế trong app: chữ hiện ra sau 0,6–1,2 s kể từ lúc dừng ghi; mọi lần đều `Transcript (local)`.
+- **Cổng VAD** (`VadModelFile`, mặc định `ggml-silero-v6.2.0.bin` trong thư mục model):
+  - Không có tiếng nói → không chép, không gõ gì. Có tiếng nói → chép **nguyên** bản ghi, không cắt.
+  - Kiểm bằng harness dùng đúng đường đọc audio của app: 6/6 bản ghi thật (mean -27 đến -40 dB),
+    100/100 câu ViMD/FLEURS → có tiếng nói; 3/3 file im lặng/nhiễu → chặn.
+  - Trong app: 3 lần không nói đều bị chặn (xác suất VAD tối đa ≤ 0,19, ngưỡng 0,5). Không qua cổng
+    thì PhoWhisper bịa ra "đây là một trong những phương tiện rất thu hút." và "tôi có thể cho cô ấy
+    xem những truyện ngắn như thế này không.". Câu nói thật ngay sau đó: xác suất 1,00, chép đúng.
+  - Cổng chỉ áp cho engine local. Groq (dự phòng) vẫn chưa có cổng.
+- **Không tăng Input volume của micro MacBook Pro.** Tăng từ 53 lên 80 làm bản ghi thành tiếng ù
+  38–71 Hz kịch trần (28 % mẫu bị cắt, RMS -3 dB), mất hẳn giọng nói. Đã trả về 53.
+
 **Ghi chú về từng mục A1–A12, D1–D10**
 
 - **A1–A7, A9: chưa kiểm.** Cần cài app mới vào /Applications (phải cấp lại quyền) và test tay theo

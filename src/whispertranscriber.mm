@@ -14,6 +14,17 @@ static NSString *const kLocalModelURLKey = @"LocalModelURL";
 static NSString *const kDefaultModelFile = @"ggml-large-v3-turbo.bin";
 static NSString *const kModelRepoURL = @"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
+// Speech gate: Whisper models invent a sentence for silence or background noise ("Hãy
+// subscribe cho kênh…"; PhoWhisper makes up plausible Vietnamese), and the app would type
+// it. A Silero VAD model (~1 MB) checks for speech first; with none, nothing is transcribed
+// or typed. It only gates: the full recording is transcribed, because cutting the audio to
+// the detected segments clipped the first words of short utterances. Same lookup as
+// LocalModelFile (bare name in the model folder, or an absolute path). A missing file
+// turns the gate off. Fetch it from
+// https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
+static NSString *const kVadModelFileKey = @"VadModelFile";
+static NSString *const kDefaultVadModelFile = @"ggml-silero-v6.2.0.bin";
+
 static double monotonicNow() { return [NSProcessInfo processInfo].systemUptime; }
 static std::string cstr(NSString *s) { const char *c = [s UTF8String]; return c ? c : ""; }
 
@@ -121,6 +132,10 @@ WhisperTranscriber::~WhisperTranscriber()
             whisper_free(m_ctx);
             m_ctx = nullptr;
         }
+        if (m_vad) {
+            whisper_vad_free(m_vad);
+            m_vad = nullptr;
+        }
     });
 }
 
@@ -152,9 +167,10 @@ std::string WhisperTranscriber::modelName() const
     return cstr([configuredModelFile() lastPathComponent]);
 }
 
-std::string WhisperTranscriber::getModelPath() const
+// Bare file name -> the app's model folder; absolute or ~ path -> as is.
+static std::string resolveModelFile(NSString *configured)
 {
-    NSString *file = [configuredModelFile() stringByExpandingTildeInPath];
+    NSString *file = [configured stringByExpandingTildeInPath];
     if ([file isAbsolutePath]) return cstr(file);
 
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
@@ -162,6 +178,29 @@ std::string WhisperTranscriber::getModelPath() const
     [[NSFileManager defaultManager] createDirectoryAtPath:appSupport
                               withIntermediateDirectories:YES attributes:nil error:nil];
     return cstr([appSupport stringByAppendingPathComponent:[file lastPathComponent]]);
+}
+
+std::string WhisperTranscriber::getModelPath() const
+{
+    return resolveModelFile(configuredModelFile());
+}
+
+void WhisperTranscriber::loadVad()
+{
+    if (m_vad) return;
+    NSString *name = [[NSUserDefaults standardUserDefaults] stringForKey:kVadModelFileKey];
+    name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    std::string path = resolveModelFile(name.length > 0 ? name : kDefaultVadModelFile);
+    if (![[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithUTF8String:path.c_str()]]) {
+        NSLog(@"No VAD model at %s: silence is transcribed as is (may invent text)", path.c_str());
+        return;
+    }
+    m_vad = whisper_vad_init_from_file_with_params(path.c_str(), whisper_vad_default_context_params());
+    if (m_vad) {
+        NSLog(@"Speech gate on (VAD %s)", path.c_str());
+    } else {
+        NSLog(@"Cannot load VAD model %s: speech gate off", path.c_str());
+    }
 }
 
 std::string WhisperTranscriber::getModelUrl() const
@@ -207,6 +246,10 @@ void WhisperTranscriber::release()
             m_ctx = nullptr;
             NSLog(@"Whisper model unloaded");
         }
+        if (m_vad) {
+            whisper_vad_free(m_vad);
+            m_vad = nullptr;
+        }
     });
 }
 
@@ -226,6 +269,7 @@ void WhisperTranscriber::loadModelAsync()
             m_ctx = whisper_init_from_file_with_params(modelPath.c_str(), cparams);
         }
         bool ok = m_ctx != nullptr;
+        if (ok) loadVad();
         double seconds = monotonicNow() - t0;
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -392,6 +436,29 @@ void WhisperTranscriber::doTranscribe(const std::string& wavFilePathRef)
     if (pcmf32.empty()) {
         postError(wavFilePath, "No audio data in file");
         return;
+    }
+
+    if (m_vad) {
+        double tVad = monotonicNow();
+        struct whisper_vad_segments *segs = whisper_vad_segments_from_samples(
+            m_vad, whisper_vad_default_params(), pcmf32.data(), (int)pcmf32.size());
+        // Segment times are in centiseconds. A VAD failure (null) lets Whisper run as before.
+        int n = segs ? whisper_vad_segments_n_segments(segs) : -1;
+        float speechCs = 0;
+        for (int i = 0; i < n; i++) {
+            speechCs += whisper_vad_segments_get_segment_t1(segs, i) - whisper_vad_segments_get_segment_t0(segs, i);
+        }
+        if (segs) whisper_vad_free_segments(segs);
+        NSLog(@"VAD: %d speech segment(s), %.2f s of speech in %.1f s of audio (%.0f ms)",
+              n, speechCs / 100.0, pcmf32.size() / 16000.0, (monotonicNow() - tVad) * 1000.0);
+        if (n == 0) {
+            NSLog(@"No speech detected: nothing to type");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                m_isTranscribing = false;
+                if (onTranscriptionComplete) onTranscriptionComplete(wavFilePath, "");
+            });
+            return;
+        }
     }
 
     // Whisper parameters
