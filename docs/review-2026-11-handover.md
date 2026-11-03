@@ -346,7 +346,8 @@ PhoWhisper-medium tự convert từ `vinai/PhoWhisper-medium`:
    đoạn chỉ một dấu chấm cuối (kể cả câu hỏi), số viết bằng chữ ("ba đến năm"). WER trên FLEURS
    ngang turbo; CER tệ hơn (6,8 so với 4,9), chủ yếu do tên riêng. Muốn dùng phải thêm model khôi
    phục dấu câu và chữ hoa.
-2. **large-v3-turbo-q5_0 là ứng viên local tốt nhất cho máy này:**
+2. *(Chỉ đúng với FLEURS; trên giọng nói tự nhiên thì ngược lại, xem phần "Bổ sung" bên dưới.)*
+   **large-v3-turbo-q5_0 là ứng viên local tốt nhất cho máy này:**
    - WER 10,0 so với Groq 9,2 trên cùng 19 câu là 9,9: chênh 0,7 điểm, trong ngưỡng 5.4.
    - Dấu câu và chữ hoa đầy đủ.
    - p50 ~1,0 s, p90 1,05 s, so với Groq p50 2,8 s / p90 4,9 s **ngay cả lúc mạng tốt**.
@@ -357,6 +358,45 @@ PhoWhisper-medium tự convert từ `vinai/PhoWhisper-medium`:
 3. **Ảo giác có thật và xảy ra cả với Groq hiện tại.** VAD chặn được 100 %, nhưng nếu dùng VAD để
    *cắt* audio thì mất đầu câu ngắn. Đề xuất: dùng VAD làm **cổng**: không có tiếng nói → không gửi
    và không gõ gì; có tiếng nói → gửi nguyên audio. Hoặc tăng `--vad-speech-pad-ms`, nhưng chưa thử.
+
+**Bổ sung: giọng nói tự nhiên (ViMD test, đa phương ngữ, đáp án có dấu câu và chữ hoa).**
+- Mỗi tập 30 câu ngẫu nhiên (seed 42), dài 2–30 s, chuyển sang s16 16 kHz.
+- Miền Bắc lấy từ shard `test-00000` (Cao Bằng, Hải Phòng, Lạng Sơn, Quảng Ninh, Thái Bình).
+- Miền Nam lấy từ shard `test-00007` (Kiên Giang, Đồng Tháp, Cần Thơ, Vĩnh Long, An Giang).
+- `linhtran92/viet_bud500` bị gated (cần đăng nhập HF) nên không dùng.
+- Kết quả trong `build-bench/results-vimd-{north,south}/`.
+
+| Tập | Model | WER % | CER % | caps % | p50 s | p90 s | max s | RAM MB |
+|---|---|---|---|---|---|---|---|---|
+| Bắc 30 | PhoWhisper-medium q5_0 | **10,8** | 7,8 | 0 | 1,51 | 2,05 | 2,34 | 843 |
+| Bắc 30 | large-v3-turbo q5_0 | 24,1 | 21,2 | 100 | 1,10 | 1,44 | 10,40 | 740 |
+| Bắc 30 | large-v3-turbo f16 | 27,4 | 24,1 | 97 | 1,10 | 4,35 | 10,81 | 1809 |
+| Bắc 27 (bỏ 3 câu bị bịa) | PhoWhisper q5_0 / turbo q5_0 | **10,5** / 17,0 | | | | | | |
+| Nam 30 | PhoWhisper-medium q5_0 | **10,0** | 7,0 | 0 | 1,40 | 1,89 | 2,10 | 834 |
+| Nam 30 | large-v3-turbo q5_0 | 14,8 | 11,5 | 97 | 1,17 | 1,29 | 1,39 | 659 |
+
+- **Kết luận 2 ở trên đổi.** Trên giọng nói tự nhiên, turbo kém PhoWhisper rõ rệt:
+  WER 15–17 % so với 10–11 %. FLEURS (giọng đọc) đã che mất khác biệt này.
+- **Turbo bịa câu ngay trên giọng nói thật.** 3/30 câu miền Bắc (7–23 s, âm lượng bình thường,
+  mean -18 đến -24 dB) ra toàn bộ là "Hãy subscribe cho kênh … Để không bỏ lỡ những video hấp dẫn"
+  hoặc "… đã theo dõi và hẹn gặp lại …". PhoWhisper chép đúng cả 3. Miền Nam không có câu nào bị bịa.
+- **Groq (large-v3) trên 3 câu đó:**
+  - `0001` đúng ý.
+  - `0101` đúng.
+  - `0090` (21 s) **mất 3/4 đầu câu**, chỉ còn "Các bệnh nhân có thể đưa ra những giải pháp…".
+  - Không chạy đủ 19 câu vì mạng: lúc 17:40 upload chỉ 15–29 KB/s, mỗi câu 20 s mất ~42 s.
+- **Lỗi bench mới:** `urllib` `timeout=120` là timeout từng thao tác socket, không phải tổng. Upload
+  nhỏ giọt không bao giờ hết hạn, nên bench Groq kẹt 36 phút không ra file nào. Cần giới hạn tổng
+  thời gian, ví dụ chạy request trong thread và bỏ khi quá hạn.
+- Bản ghi thật `voice_20260930_214137_081` có mean -40,5 dB, nhỏ hơn ViMD ~17 dB. Nên kiểm tra
+  mức thu micro.
+- **Hệ quả:**
+  - PhoWhisper chính xác nhất nhưng thiếu chữ hoa và dấu phẩy.
+  - turbo/Groq có định dạng nhưng sai nhiều hơn và có thể bịa nguyên câu.
+  - Hướng đáng thử tiếp: **PhoWhisper + model khôi phục dấu câu/chữ hoa tiếng Việt**. Hoặc dùng
+    turbo kèm phát hiện câu bịa (so khớp mẫu, hoặc đối chiếu độ dài transcript với thời lượng tiếng
+    nói từ VAD).
+  - Cần bộ ghi âm giọng của chủ dự án để chốt.
 
 **Ghi chú về từng mục A1–A12, D1–D10**
 
